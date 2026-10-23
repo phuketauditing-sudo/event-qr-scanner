@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Event QR Scanner</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 520px;
+      margin: 0 auto;
+      padding: 20px;
+      text-align: center;
+      background: #f5f7fa;
+    }
+    h2 { margin-bottom: 8px; }
+    #reader {
+      width: 100%;
+      margin: 20px auto;
+      background: white;
+    }
+    button {
+      padding: 14px 20px;
+      margin: 6px;
+      border: 0;
+      border-radius: 10px;
+      font-size: 16px;
+      cursor: pointer;
+    }
+    #start { background: #1769aa; color: white; }
+    #stop { background: #ddd; color: #222; }
+    #status {
+      padding: 14px;
+      border-radius: 10px;
+      background: white;
+      overflow-wrap: anywhere;
+    }
+  </style>
+</head>
+<body>
+  <h2>สแกน QR Code เข้างาน</h2>
+  <p>กรุณาอนุญาตให้เข้าถึงกล้องหลัง</p>
+
+  <div id="reader"></div>
+
+  <button id="start">เปิดกล้อง</button>
+  <button id="stop">ปิดกล้อง</button>
+  <div id="status" role="status" aria-live="polite">
+    พร้อมสแกน
+  </div>
+
+  <script>
+    // แก้ให้ตรงกับ URL ที่ Deploy จาก Apps Script
+    const GAS_ORIGIN = 'https://script.google.com';
+
+    const statusBox = document.getElementById('status');
+    let scanner = null;
+    let running = false;
+    let processing = false;
+    let lastCode = '';
+    let lastScanAt = 0;
+
+    function showStatus(message) {
+      statusBox.textContent = message;
+    }
+
+    function validRegistrationId(value) {
+      return typeof value === 'string' &&
+        value.trim().length > 0 &&
+        value.trim().length <= 200;
+    }
+
+    async function startScanner() {
+      if (running) return;
+
+      if (!window.opener || window.opener.closed) {
+        showStatus('กรุณากลับไปหน้าเช็คอิน แล้วกดเปิด Scanner ใหม่');
+        return;
+      }
+
+      try {
+        if (!scanner) {
+          scanner = new Html5Qrcode('reader');
+        }
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 10,
+            qrbox: { width: 250, height: 250 }
+          },
+          async (decodedText) => {
+            const now = Date.now();
+            const registrationId = decodedText.trim();
+
+            if (processing ||
+                (registrationId === lastCode &&
+                 now - lastScanAt < 5000)) {
+              return;
+            }
+
+            if (!validRegistrationId(registrationId)) {
+              showStatus('QR Code ไม่ถูกต้อง');
+              return;
+            }
+
+            processing = true;
+            lastCode = registrationId;
+            lastScanAt = now;
+
+            try {
+              await scanner.stop();
+              running = false;
+            } catch (_) {}
+
+            showStatus('กำลังตรวจสอบและบันทึก...');
+
+            window.opener.postMessage({
+              type: 'QR_SCANNED',
+              registrationId: registrationId
+            }, GAS_ORIGIN);
+          },
+          () => {}
+        );
+
+        running = true;
+        showStatus('กำลังเปิดกล้อง พร้อมสแกน');
+      } catch (error) {
+        showStatus('เปิดกล้องไม่สำเร็จ: ' + error.message);
+      }
+    }
+
+    async function stopScanner() {
+      if (scanner && running) {
+        try {
+          await scanner.stop();
+        } catch (_) {}
+      }
+      running = false;
+      showStatus('ปิดกล้องแล้ว');
+    }
+
+    document.getElementById('start').onclick = startScanner;
+    document.getElementById('stop').onclick = stopScanner;
+
+    window.addEventListener('message', async (event) => {
+      if (event.origin !== GAS_ORIGIN) return;
+      if (event.source !== window.opener) return;
+
+      const data = event.data;
+      if (!data || data.type !== 'CHECKIN_RESULT') return;
+
+      processing = false;
+      lastCode = '';
+      showStatus(data.message || 'ได้รับผลการเช็คอินแล้ว');
+
+      // เริ่มสแกนใหม่หลังแสดงผล
+      setTimeout(() => {
+        if (!running) startScanner();
+      }, 2500);
+    });
+
+    window.addEventListener('pagehide', () => {
+      if (scanner && running) {
+        scanner.stop().catch(() => {});
+      }
+    });
+  </script>
+</body>
+</html>
